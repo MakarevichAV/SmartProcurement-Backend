@@ -8,6 +8,7 @@ Wires the app: correlation-id middleware, unified error handlers, an unauthentic
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.api.middleware import CorrelationIdMiddleware
@@ -15,7 +16,7 @@ from app.api.routers import auth as auth_router
 from app.api.routers import capabilities as capabilities_router
 from app.api.routers import enterprise as enterprise_router
 from app.core.config import get_settings
-from app.core.errors import register_exception_handlers
+from app.core.errors import CORRELATION_ID_HEADER, register_exception_handlers
 
 
 def create_app() -> FastAPI:
@@ -26,6 +27,14 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.add_middleware(CorrelationIdMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origin_list,
+        allow_credentials=True,  # the SPA sends the httpOnly refresh cookie
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=[CORRELATION_ID_HEADER],
+    )
     register_exception_handlers(app)
 
     @app.get("/health", tags=["meta"])

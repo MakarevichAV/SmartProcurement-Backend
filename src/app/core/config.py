@@ -45,6 +45,14 @@ class Settings(BaseSettings):
 
     # --- HTTP ---
     api_v1_prefix: str = Field(default="/api/v1")
+    cors_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        description="Comma-separated list of allowed browser origins (credentials enabled).",
+    )
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 @lru_cache(maxsize=1)
