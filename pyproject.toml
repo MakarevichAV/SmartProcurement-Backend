@@ -45,6 +45,8 @@ package = true
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# Vendored, unmodified third-party code — not ours to reformat (see src/app/vendor/lorm/UPSTREAM.md).
+extend-exclude = ["src/app/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
@@ -56,6 +58,7 @@ ignore = [
 [tool.black]
 line-length = 100
 target-version = ["py312"]
+extend-exclude = "src/app/vendor"
 
 [tool.mypy]
 python_version = "3.12"
@@ -66,10 +69,20 @@ disallow_untyped_defs = true
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
+exclude = ["src/app/vendor/"]
 
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["app.vendor.*"]
+ignore_errors = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
