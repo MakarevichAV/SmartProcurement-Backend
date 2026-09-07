@@ -48,7 +48,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
-ignore = ["B008"]  # FastAPI dependency-injection default-arg pattern
+ignore = [
+    "B008",   # FastAPI dependency-injection default-arg pattern
+    "UP047",  # keep classic TypeVar generics (consistent across the codebase)
+]
 
 [tool.black]
 line-length = 100

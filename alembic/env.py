@@ -14,6 +14,7 @@ from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
+import app.models_registry  # noqa: F401  (populates Base.metadata)
 from app.core.config import get_settings
 from app.core.db import Base
 
