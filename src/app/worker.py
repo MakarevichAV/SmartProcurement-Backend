@@ -46,6 +46,14 @@ async def _noop(session: AsyncSession, job: Job) -> None:
     return None
 
 
+def _load_feature_handlers() -> None:
+    """Import feature modules so their ``@register`` decorators populate ``HANDLERS``."""
+    from app.integration import jobs as _integration_jobs  # noqa: F401
+
+
+_load_feature_handlers()
+
+
 async def _run_job(session: AsyncSession, job: Job) -> None:
     handler = HANDLERS.get(job.kind)
     if handler is None:

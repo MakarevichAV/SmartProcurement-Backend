@@ -1,0 +1,7 @@
+sku,name,category,unit,warehouse_code,on_hand_qty,min_qty,supplier_code,supplier_name,supplier_approved,unit_price,currency,lead_time_days,monthly_consumption,production_demand_qty,production_need_by,open_po_ref,open_po_qty,open_po_expected_at
+SKU-100,Hex Bolt M8,fasteners,ea,WH-MAIN,1200,400,ACME,Acme Industrial Supply,true,0.12,USD,7,900,0,,,,
+SKU-101,Hex Nut M8,fasteners,ea,WH-MAIN,300,500,ACME,Acme Industrial Supply,true,0.08,USD,7,850,1200,2026-10-05,PO-5567,2000,2026-10-01
+SKU-200,Steel Sheet 2mm,raw-metal,sheet,WH-MAIN,45,20,NORDIC,Nordic Metals AB,true,58.40,USD,21,12,0,,,,
+SKU-201,Aluminium Profile 40x40,raw-metal,m,WH-MAIN,610,150,NORDIC,Nordic Metals AB,true,6.75,USD,18,140,0,,,,
+SKU-300,Cutting Fluid 5L,consumables,can,WH-SOUTH,26,30,ACME,Acme Industrial Supply,true,19.90,USD,5,22,0,,,,
+SKU-301,Shop Rag Bale,consumables,bale,WH-SOUTH,88,25,ACME,Acme Industrial Supply,true,14.50,USD,5,18,0,,,,
