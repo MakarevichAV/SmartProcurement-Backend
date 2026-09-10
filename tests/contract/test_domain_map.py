@@ -19,7 +19,13 @@ from tests.helpers import admin_headers, buyer_headers
 pytestmark = pytest.mark.asyncio
 
 
-async def _seed_rows(session: AsyncSession, enterprise_id: uuid.UUID) -> None:
+async def _seed_rows(session: AsyncSession, enterprise_id: uuid.UUID) -> str:
+    """Insert one item + one supplier with provenance. Returns the item's sku.
+
+    Uses a per-call unique sku/code so the test never collides with rows a prior manual
+    or worker-driven run left in a shared database.
+    """
+    tag = uuid.uuid4().hex[:8]
     prov = {
         "data_source_id": str(uuid.uuid4()),
         "source_field_path": "sku",
@@ -28,7 +34,7 @@ async def _seed_rows(session: AsyncSession, enterprise_id: uuid.UUID) -> None:
     session.add(
         Item(
             enterprise_id=enterprise_id,
-            sku="A-1",
+            sku=f"A-{tag}",
             name="Widget",
             category="hardware",
             unit="ea",
@@ -40,7 +46,7 @@ async def _seed_rows(session: AsyncSession, enterprise_id: uuid.UUID) -> None:
     session.add(
         Supplier(
             enterprise_id=enterprise_id,
-            code="ACME",
+            code=f"ACME-{tag}",
             name="Acme Corp",
             is_approved=True,
             notes="",
@@ -49,6 +55,7 @@ async def _seed_rows(session: AsyncSession, enterprise_id: uuid.UUID) -> None:
         )
     )
     await session.flush()
+    return f"A-{tag}"
 
 
 async def test_domain_map_summary_has_provenance_and_observability(
@@ -72,11 +79,11 @@ async def test_domain_map_summary_has_provenance_and_observability(
 async def test_domain_entity_rows_carry_provenance(
     client: AsyncClient, db_session: AsyncSession, seeded
 ) -> None:
-    await _seed_rows(db_session, seeded.id)
+    sku = await _seed_rows(db_session, seeded.id)
     headers = await admin_headers(client)
     resp = await client.get("/api/v1/domain/item?limit=200", headers=headers)
     assert resp.status_code == 200, resp.text
-    row = next(r for r in resp.json()["items"] if r["sku"] == "A-1")
+    row = next(r for r in resp.json()["items"] if r["sku"] == sku)
     assert row["source_provenance"]["source_field_path"] == "sku"
     assert row["observability"] == "fresh"
 

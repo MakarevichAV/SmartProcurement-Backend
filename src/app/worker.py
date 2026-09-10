@@ -16,26 +16,18 @@ import contextlib
 import signal
 import socket
 import uuid
-from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.models_registry  # noqa: F401  — populate Base.metadata before any ORM flush
 from app.core.db import get_sessionmaker
 from app.jobs import queue
 from app.jobs.models import Job
+from app.jobs.registry import HANDLERS, JobHandler, load_feature_handlers, register
 
-JobHandler = Callable[[AsyncSession, Job], Awaitable[None]]
-
-HANDLERS: dict[str, JobHandler] = {}
-
-
-def register(kind: str) -> Callable[[JobHandler], JobHandler]:
-    def _wrap(fn: JobHandler) -> JobHandler:
-        HANDLERS[kind] = fn
-        return fn
-
-    return _wrap
-
+# Re-exported so existing imports (`from app.worker import register`) keep working; the
+# registry lives in app.jobs.registry so it is shared across module copies (see that module).
+__all__ = ["HANDLERS", "JobHandler", "poll_loop", "process_once", "register"]
 
 WORKER_ID = f"{socket.gethostname()}:{uuid.uuid4().hex[:8]}"
 
@@ -46,12 +38,7 @@ async def _noop(session: AsyncSession, job: Job) -> None:
     return None
 
 
-def _load_feature_handlers() -> None:
-    """Import feature modules so their ``@register`` decorators populate ``HANDLERS``."""
-    from app.integration import jobs as _integration_jobs  # noqa: F401
-
-
-_load_feature_handlers()
+load_feature_handlers()
 
 
 async def _run_job(session: AsyncSession, job: Job) -> None:

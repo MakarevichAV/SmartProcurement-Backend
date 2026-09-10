@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.integration.mapping_ai import suggest_mappings_for_source
 from app.integration.sync import sync_source
 from app.jobs.models import Job
-from app.worker import register
+from app.jobs.registry import register
 
 
 @register("suggest_mapping")
