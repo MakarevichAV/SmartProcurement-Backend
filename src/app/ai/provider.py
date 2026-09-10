@@ -89,6 +89,12 @@ class DeterministicMockProvider:
         self.calls.append({"task": task, "key": key, "prompt": prompt})
         raw = self._responses.get((task, key)) or self._responses.get((task, "default"))
         if raw is None:
+            # Demo fallback: registered fixtures always win; only used when none was set
+            # (e.g. the quickstart flow with LLM_PROVIDER=mock). See ai/mock_demo.py.
+            if task == "MappingSuggestionSet":
+                from app.ai.mock_demo import mapping_suggestions_json
+
+                return mapping_suggestions_json(prompt)
             raise LLMUnavailable(f"no mock response for task={task!r} key={key!r}")
         if raw == "__FAIL__":
             raise LLMUnavailable(f"mock forced failure for task={task!r}")

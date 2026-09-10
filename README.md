@@ -116,7 +116,10 @@ DB-backed tests skip automatically if PostgreSQL is unreachable. LLM-dependent t
 deterministic mock — no API key needed. Vendored `src/app/vendor/` is excluded from
 ruff/black/mypy (unmodified third-party).
 
-## Phase 2 capabilities (what this backend does today)
+## Capabilities (what this backend does today)
+
+Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the L0 domain map**
+(see "US1" below).
 
 - **Auth & sessions** — `POST /api/v1/auth/login` (email + password), `/auth/refresh`,
   `/auth/logout`, `GET /api/v1/me`.
@@ -149,13 +152,43 @@ ruff/black/mypy (unmodified third-party).
   UPDATE/DELETE on `audit_record` and `capability_level_event` raise.
 - **Durable job queue + worker** — `job` table drained with `FOR UPDATE SKIP LOCKED`,
   exponential backoff, recurring self-re-enqueue; the worker loop dispatches to registered
-  handlers (only a `noop` self-test handler exists so far).
+  handlers (`noop` plus the US1 `suggest_mapping` / `observe_source` handlers).
 - **AI provider seam** — `LLMProvider` (Anthropic + deterministic mock) and a
   `generate_structured` wrapper that validates output and, on persistent failure, opens an
   `ai_unavailable` observability gap + audit record instead of proceeding.
 - **LORM policy validation** — vendored schema + `validate_policy.py`, wrapped by
   `app/policies/schema_validator.py` (schema + SPEC 8-1 author ≠ approver, etc.).
 - **Secret storage** — Fernet-encrypted `secret` table + `SecretStore` seam.
+
+### US1 — data sources & the L0 domain map
+
+- **Connect / test / introspect** — `POST /api/v1/data-sources` (`file` | `rest` | `sql`;
+  credentials go straight to `SecretStore` and never appear in a response), `.../test`
+  (updates `data_source.health` + opens/closes a `source`-scoped `observability_gap`),
+  `.../introspect` (persists `source_field` rows), `.../upload` (file body),
+  `.../health-history`.
+- **Connectors** — `SourceConnector` protocol + `file` (CSV/JSON), `rest` (JSON over HTTP,
+  bearer/basic/api-key auth, optional page walk) and `sql` (**SELECT-only**, write/DDL
+  keywords rejected) implementations behind a registry. Decision/domain code imports none of
+  them.
+- **AI-suggested mappings** — `POST /api/v1/data-sources/{id}/mapping-suggestions` runs
+  `generate_structured(MappingSuggestionSet)`; suggestions whose `source_field_path` is not
+  in the introspected set are dropped; each survivor is stored as
+  `field_mapping(status=suggested)`. **Nothing is applied automatically.**
+- **Mapping lifecycle** — `POST /api/v1/mappings`, `/mappings/{id}/confirm|reject|retire`,
+  `PATCH /mappings/{id}`, `GET /mappings/{id}/history`; every transition appends an
+  append-only `mapping_change_event`. Only `confirmed` mappings feed sync.
+- **Sync** — `sync_source` + the `observe_source` job fetch a batch, map it through confirmed
+  mappings, and upsert the 11 canonical entities (`item`, `warehouse`, `supplier`,
+  `stock_level`, `price`, `lead_time`, `purchase_order`, `consumption`, `production_demand`,
+  `quality_record`, `item_supplier`), each row stamped with `source_provenance` and
+  `observability`. **Data path only** — no `observation_signal` diffing, no scheduler, no
+  analysis (those are US2).
+- **L0 Domain Map** — `GET /api/v1/domain/map` (per-entity counts, source ids and
+  observability breakdown + a static relationship graph) and `GET /api/v1/domain/{entity}`
+  (paged rows with provenance).
+- **No `pgvector`, embeddings, or semantic retrieval** — deliberately deferred (research.md
+  §13).
 
 ### Authentication behavior
 
@@ -185,8 +218,8 @@ local dev database.
 
 The following are **not** implemented yet (see `specs/001-smart-procurement/tasks.md`):
 
-- Data-source connectors, field mappings, the L0 domain map (Phase 3 / US1).
-- Observation loop, signals, aggregates, risk detection and AI explanations (Phase 4 / US2).
+- Observation loop, signals, aggregates, risk detection and AI explanations (Phase 4 / US2) —
+  US1's sync writes canonical rows but does **not** diff them into `observation_signal`.
 - Recommendations and the `LormEnforcementService.evaluate()` `allow / ask / deny` gate,
   `procurement_action` (Phase 5 / US3).
 - L4 approval workflow, execution adapters, dispatch + reconciliation (Phase 6 / US4).
