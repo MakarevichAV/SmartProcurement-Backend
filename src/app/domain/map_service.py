@@ -6,7 +6,9 @@ This is L0: no analysis, no risk, no recommendation.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
+from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -18,6 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import NotFoundError
 from app.core.pagination import paginate
 from app.domain.models import ENTITY_MODELS
+from app.integration import service as integration_service
+
+# Domain masters that carry a human-readable identifier and are worth resolving FKs to.
+_LABELABLE = ("item", "warehouse", "supplier")
 
 # Static L0 relationship graph (structural, not analytical).
 _RELATIONSHIPS = [
@@ -55,6 +61,112 @@ def _resolve_model(entity: str) -> type[Any]:
     if model is None:
         raise NotFoundError(f"unknown domain entity {entity!r}")
     return model
+
+
+def _referenceable_fk_columns(model: type[Any]) -> dict[str, str]:
+    """``{fk_column: target_entity}`` for FKs that point at a labelable master.
+
+    Derived from SQLAlchemy metadata — no per-entity hard-coding.
+    """
+    out: dict[str, str] = {}
+    for col in sa_inspect(model).columns:
+        for fk in col.foreign_keys:
+            target = fk.column.table.name
+            if target in _LABELABLE:
+                out[col.key] = target
+    return out
+
+
+def _reference_payload(entity: str, obj: Any) -> dict[str, Any]:
+    """A compact business identity for a referenced row: a display ``label`` plus the raw
+    id and the natural-key fields (secondary/technical). Not a copy of the row's data."""
+    if entity == "item":
+        label = f"{obj.sku} — {obj.name}" if obj.name else obj.sku
+        return {
+            "entity": "item",
+            "id": str(obj.id),
+            "label": label,
+            "sku": obj.sku,
+            "name": obj.name,
+        }
+    # warehouse / supplier: code (— name)
+    label = f"{obj.code} — {obj.name}" if obj.name else obj.code
+    return {"entity": entity, "id": str(obj.id), "label": label, "code": obj.code, "name": obj.name}
+
+
+async def _attach_references(
+    session: AsyncSession,
+    enterprise_id: uuid.UUID,
+    model: type[Any],
+    rows: list[Any],
+    serialized: list[dict[str, Any]],
+) -> None:
+    fk_cols = _referenceable_fk_columns(model)
+    if not fk_cols:
+        return
+
+    ids_by_entity: dict[str, set[uuid.UUID]] = defaultdict(set)
+    for row in rows:
+        for col, target in fk_cols.items():
+            value = getattr(row, col)
+            if value is not None:
+                ids_by_entity[target].add(value)
+
+    loaded: dict[str, dict[uuid.UUID, Any]] = {}
+    for target, ids in ids_by_entity.items():
+        target_model = ENTITY_MODELS[target]
+        objs = (
+            (
+                await session.execute(
+                    select(target_model).where(
+                        target_model.enterprise_id == enterprise_id,
+                        target_model.id.in_(ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        loaded[target] = {obj.id: obj for obj in objs}
+
+    for row, out in zip(rows, serialized, strict=True):
+        refs: dict[str, Any] = {}
+        for col, target in fk_cols.items():
+            value = getattr(row, col)
+            obj = loaded.get(target, {}).get(value) if value is not None else None
+            if obj is not None:
+                refs[col] = _reference_payload(target, obj)
+        out["references"] = refs
+
+
+async def _attach_provenance(
+    session: AsyncSession, enterprise_id: uuid.UUID, serialized: list[dict[str, Any]]
+) -> None:
+    def _as_uuid(raw: Any) -> uuid.UUID | None:
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            return uuid.UUID(str(raw))
+        return None
+
+    wanted = {
+        u
+        for out in serialized
+        if (u := _as_uuid((out.get("source_provenance") or {}).get("data_source_id"))) is not None
+    }
+    names = await integration_service.get_source_names(session, enterprise_id, wanted)
+
+    for out in serialized:
+        sp = out.get("source_provenance") or {}
+        raw_id = sp.get("data_source_id")
+        ds_uuid = _as_uuid(raw_id)
+        fields = [
+            f for f in (p.strip() for p in (sp.get("source_field_path") or "").split(",")) if f
+        ]
+        out["provenance"] = {
+            "data_source_id": str(raw_id) if raw_id else None,
+            "data_source_name": names.get(ds_uuid) if ds_uuid else None,
+            "source_fields": fields,
+            "fetched_at": sp.get("fetched_at"),
+        }
 
 
 async def domain_map(session: AsyncSession, enterprise_id: uuid.UUID) -> dict[str, Any]:
@@ -109,4 +221,7 @@ async def domain_entity_rows(
         .order_by(model.created_at, model.id)
     )
     rows, next_cursor = await paginate(session, stmt, limit=limit, cursor=cursor)
-    return [_serialize(r) for r in rows], next_cursor
+    serialized = [_serialize(r) for r in rows]
+    await _attach_references(session, enterprise_id, model, rows, serialized)
+    await _attach_provenance(session, enterprise_id, serialized)
+    return serialized, next_cursor

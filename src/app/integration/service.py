@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -46,6 +47,29 @@ async def get_data_source(
     if row is None:
         raise NotFoundError("data source not found")
     return row
+
+
+async def get_source_names(
+    session: AsyncSession,
+    enterprise_id: uuid.UUID,
+    data_source_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    """Resolve ``{data_source_id: name}`` for the caller's enterprise in one query.
+
+    Used by the L0 Domain Map read model to show a business-readable source label without
+    reaching into the ``integration`` tables from ``domain/``.
+    """
+    ids = {i for i in data_source_ids if i is not None}
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(DataSource.id, DataSource.name).where(
+                DataSource.enterprise_id == enterprise_id, DataSource.id.in_(ids)
+            )
+        )
+    ).all()
+    return {row.id: row.name for row in rows}
 
 
 async def list_data_sources(session: AsyncSession, enterprise_id: uuid.UUID) -> list[DataSource]:
