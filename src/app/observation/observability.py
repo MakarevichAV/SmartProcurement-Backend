@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.observation.models import GAP_REASONS, GAP_SCOPES, ObservabilityGap
@@ -46,6 +46,18 @@ class ObservabilityService:
         if gap is not None:
             gap.closed_at = datetime.now(UTC)
             await self._session.flush()
+
+    async def count_open(self, *, enterprise_id: uuid.UUID) -> int:
+        """Number of currently-open observability gaps for the enterprise."""
+        stmt = (
+            select(func.count())
+            .select_from(ObservabilityGap)
+            .where(
+                ObservabilityGap.enterprise_id == enterprise_id,
+                ObservabilityGap.closed_at.is_(None),
+            )
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def has_open_for(self, *, enterprise_id: uuid.UUID, scope: str, scope_ref: str) -> bool:
         stmt = select(ObservabilityGap.id).where(

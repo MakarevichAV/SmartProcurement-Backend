@@ -14,6 +14,7 @@ from app import __version__
 from app.api.middleware import CorrelationIdMiddleware
 from app.api.routers import auth as auth_router
 from app.api.routers import capabilities as capabilities_router
+from app.api.routers import dashboard as dashboard_router
 from app.api.routers import data_sources as data_sources_router
 from app.api.routers import domain as domain_router
 from app.api.routers import enterprise as enterprise_router
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(data_sources_router.router, prefix=prefix)
     app.include_router(mappings_router.router, prefix=prefix)
     app.include_router(domain_router.router, prefix=prefix)
+    app.include_router(dashboard_router.router, prefix=prefix)
 
     return app
 
