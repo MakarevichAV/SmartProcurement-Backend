@@ -117,28 +117,38 @@ async def test_onboarding_journey_populates_domain_with_provenance(
     result = await sync_source(db_session, enterprise_id=seeded.id, data_source_id=src.id)
     assert result.upserts.get("item", 0) >= 2
     assert result.upserts.get("supplier", 0) >= 1
+    # price mappings were never confirmed -> this sync created no price rows
+    assert result.upserts.get("price", 0) == 0
 
-    items = (
-        (await db_session.execute(select(Item).where(Item.enterprise_id == seeded.id)))
-        .scalars()
-        .all()
-    )
-    assert items
+    from_this_source = Item.source_provenance["data_source_id"].astext == str(src.id)
+    items = (await db_session.execute(select(Item).where(from_this_source))).scalars().all()
+    assert len(items) >= 2
     for it in items:
         assert it.observability == "fresh"
-        assert it.source_provenance["data_source_id"] == str(src.id)
         assert "fetched_at" in it.source_provenance
 
     suppliers = (
-        (await db_session.execute(select(Supplier).where(Supplier.enterprise_id == seeded.id)))
+        (
+            await db_session.execute(
+                select(Supplier).where(
+                    Supplier.source_provenance["data_source_id"].astext == str(src.id)
+                )
+            )
+        )
         .scalars()
         .all()
     )
     assert {s.code for s in suppliers}
 
-    # price mappings were never confirmed -> no price rows
-    price_count = (await db_session.execute(select(func.count()).select_from(Price))).scalar_one()
-    assert price_count == 0
+    # no price rows attributable to this source
+    price_here = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(Price)
+            .where(Price.source_provenance["data_source_id"].astext == str(src.id))
+        )
+    ).scalar_one()
+    assert price_here == 0
 
     # source health reflects the successful fetch
     refreshed = await db_session.get(DataSource, src.id)

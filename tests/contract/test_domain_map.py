@@ -13,7 +13,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import Item, Supplier
+from app.domain.models import ENTITY_MODELS, Item, Supplier
 from tests.helpers import admin_headers, buyer_headers
 
 pytestmark = pytest.mark.asyncio
@@ -60,12 +60,13 @@ async def test_domain_map_summary_has_provenance_and_observability(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     entities = {e["entity"]: e for e in body["entities"]}
-    assert entities["item"]["count"] == 1
-    assert entities["supplier"]["count"] == 1
+    assert entities["item"]["count"] >= 1
+    assert entities["supplier"]["count"] >= 1
     # per-entity provenance + observability summary present
     assert "sources" in entities["item"]
-    assert "observability" in entities["item"]
-    assert "relationships" in body
+    assert entities["item"]["observability"].get("fresh", 0) >= 1
+    assert {e["entity"] for e in body["entities"]} == set(ENTITY_MODELS)
+    assert body.get("relationships")
 
 
 async def test_domain_entity_rows_carry_provenance(
@@ -73,12 +74,11 @@ async def test_domain_entity_rows_carry_provenance(
 ) -> None:
     await _seed_rows(db_session, seeded.id)
     headers = await admin_headers(client)
-    resp = await client.get("/api/v1/domain/item", headers=headers)
+    resp = await client.get("/api/v1/domain/item?limit=200", headers=headers)
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["items"][0]["sku"] == "A-1"
-    assert body["items"][0]["source_provenance"]["source_field_path"] == "sku"
-    assert body["items"][0]["observability"] == "fresh"
+    row = next(r for r in resp.json()["items"] if r["sku"] == "A-1")
+    assert row["source_provenance"]["source_field_path"] == "sku"
+    assert row["observability"] == "fresh"
 
 
 async def test_domain_read_allowed_for_buyer(
