@@ -46,6 +46,23 @@ class MappingList(BaseModel):
     next_cursor: str | None = None
 
 
+class BulkConfirmIn(BaseModel):
+    data_source_id: uuid.UUID
+    mapping_ids: list[uuid.UUID]
+
+
+class BulkConfirmFailure(BaseModel):
+    mapping_id: str
+    reason: str
+
+
+class BulkConfirmOut(BaseModel):
+    data_source_id: str
+    requested: list[str]
+    confirmed: list[str]
+    failed: list[BulkConfirmFailure]
+
+
 class ChangeEventOut(BaseModel):
     action: str
     actor_id: str | None
@@ -86,6 +103,30 @@ async def create_mapping(
     )
     await session.commit()
     return mapping_out(m)
+
+
+@router.post("/mappings/bulk-confirm", response_model=BulkConfirmOut)
+async def bulk_confirm(
+    body: BulkConfirmIn,
+    user: CurrentUser = Depends(require(_CONFIRM)),
+    session: AsyncSession = Depends(get_session),
+) -> BulkConfirmOut:
+    """Confirm every eligible (belongs-to-source + ``suggested``) mapping in one request.
+    Ineligible ids are reported in ``failed`` and left untouched (partial-failure safe)."""
+    result = await mapping_service.confirm_mappings_bulk(
+        session,
+        enterprise_id=user.enterprise_id,
+        data_source_id=body.data_source_id,
+        mapping_ids=body.mapping_ids,
+        actor_id=user.id,
+    )
+    await session.commit()
+    return BulkConfirmOut(
+        data_source_id=result.data_source_id,
+        requested=result.requested,
+        confirmed=result.confirmed,
+        failed=[BulkConfirmFailure(**f) for f in result.failed],
+    )
 
 
 @router.post("/mappings/{mapping_id}/confirm", response_model=MappingOut)

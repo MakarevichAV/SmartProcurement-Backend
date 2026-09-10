@@ -8,6 +8,7 @@ and edit appends an (append-only) ``mapping_change_event`` with a before/after s
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -163,6 +164,20 @@ async def create_mapping(
     return mapping
 
 
+async def _apply_confirm(
+    session: AsyncSession, mapping: FieldMapping, *, actor_id: uuid.UUID
+) -> None:
+    """The single ``suggested/rejected/confirmed → confirmed`` transition: sets the fields
+    and appends the append-only ``mapping_change_event``. Callers do the eligibility checks."""
+    before = _snapshot(mapping)
+    mapping.status = "confirmed"
+    mapping.confirmed_by = actor_id
+    mapping.confirmed_at = datetime.now(UTC)
+    await session.flush()
+    session.add(_event(mapping, "confirmed", actor_id=actor_id, before=before))
+    await session.flush()
+
+
 async def confirm_mapping(
     session: AsyncSession,
     *,
@@ -173,14 +188,68 @@ async def confirm_mapping(
     mapping = await get_mapping(session, enterprise_id, mapping_id)
     if mapping.status == "retired":
         raise ConflictError("a retired mapping cannot be confirmed")
-    before = _snapshot(mapping)
-    mapping.status = "confirmed"
-    mapping.confirmed_by = actor_id
-    mapping.confirmed_at = datetime.now(UTC)
-    await session.flush()
-    session.add(_event(mapping, "confirmed", actor_id=actor_id, before=before))
-    await session.flush()
+    await _apply_confirm(session, mapping, actor_id=actor_id)
     return mapping
+
+
+@dataclass
+class BulkConfirmResult:
+    data_source_id: str
+    requested: list[str]
+    confirmed: list[str] = field(default_factory=list)
+    failed: list[dict[str, str]] = field(default_factory=list)
+
+
+async def confirm_mappings_bulk(
+    session: AsyncSession,
+    *,
+    enterprise_id: uuid.UUID,
+    data_source_id: uuid.UUID,
+    mapping_ids: list[uuid.UUID],
+    actor_id: uuid.UUID,
+) -> BulkConfirmResult:
+    """Confirm every mapping in ``mapping_ids`` that belongs to ``data_source_id`` and is
+    currently ``suggested``. Ineligible ids (wrong/foreign data source, not found, or a
+    non-``suggested`` status) are left untouched and returned in ``failed``. Uses the same
+    per-mapping lifecycle as :func:`confirm_mapping` (``_apply_confirm``)."""
+    await _owned_source(session, enterprise_id, data_source_id)
+
+    requested = list(dict.fromkeys(mapping_ids))  # de-dupe, preserve order
+    candidates = {
+        m.id: m
+        for m in (
+            await session.execute(
+                select(FieldMapping)
+                .join(DataSource, DataSource.id == FieldMapping.data_source_id)
+                .where(
+                    FieldMapping.id.in_(requested),
+                    FieldMapping.data_source_id == data_source_id,
+                    DataSource.enterprise_id == enterprise_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    result = BulkConfirmResult(
+        data_source_id=str(data_source_id), requested=[str(x) for x in requested]
+    )
+    for mid in requested:
+        mapping = candidates.get(mid)
+        if mapping is None:
+            result.failed.append(
+                {"mapping_id": str(mid), "reason": "not found for this data source"}
+            )
+            continue
+        if mapping.status != "suggested":
+            result.failed.append(
+                {"mapping_id": str(mid), "reason": f"status is {mapping.status!r}, not 'suggested'"}
+            )
+            continue
+        await _apply_confirm(session, mapping, actor_id=actor_id)
+        result.confirmed.append(str(mid))
+    return result
 
 
 async def reject_mapping(
