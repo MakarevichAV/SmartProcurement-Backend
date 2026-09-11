@@ -105,7 +105,7 @@ Local development URLs:
 ## Tests, lint, formatting, types
 
 ```sh
-uv run pytest                 # 30 tests (contract + integration); needs PostgreSQL running
+uv run pytest                 # 75 tests (contract + integration); needs PostgreSQL running
 uv run ruff check src tests   # lint
 uv run black --check src tests # formatting
 uv run mypy src               # strict type-check
@@ -151,8 +151,16 @@ Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the
 - **Append-only audit** — `audit_record` + `AuditRecorder`; a PostgreSQL trigger makes
   UPDATE/DELETE on `audit_record` and `capability_level_event` raise.
 - **Durable job queue + worker** — `job` table drained with `FOR UPDATE SKIP LOCKED`,
-  exponential backoff, recurring self-re-enqueue; the worker loop dispatches to registered
-  handlers (`noop` plus the US1 `suggest_mapping` / `observe_source` handlers).
+  exponential backoff, recurring self-re-enqueue; `python -m app.worker` dispatches to
+  registered handlers (`noop` plus the US1 `suggest_mapping` / `observe_source` handlers). The
+  handler registry lives in `app/jobs/registry.py` (imported exactly once) rather than on
+  `app/worker.py` — `python -m app.worker` loads that file as `__main__`, and a plain
+  `from app.worker import register` on the registry would import a *second* copy of the
+  module with its own dict, so feature `@register()` calls would land on a `HANDLERS` the
+  running worker never sees. `app/worker.py` also imports `app.models_registry` before the
+  first ORM flush so `Base.metadata` has every table (missing FKs there previously surfaced as
+  a misleading `MissingGreenlet` instead of the real `NoReferencedTableError`).
+  `tests/integration/test_worker_bootstrap.py` covers both regressions.
 - **AI provider seam** — `LLMProvider` (Anthropic + deterministic mock) and a
   `generate_structured` wrapper that validates output and, on persistent failure, opens an
   `ai_unavailable` observability gap + audit record instead of proceeding.
@@ -178,6 +186,13 @@ Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the
 - **Mapping lifecycle** — `POST /api/v1/mappings`, `/mappings/{id}/confirm|reject|retire`,
   `PATCH /mappings/{id}`, `GET /mappings/{id}/history`; every transition appends an
   append-only `mapping_change_event`. Only `confirmed` mappings feed sync.
+- **Bulk-confirm** — `POST /api/v1/mappings/bulk-confirm` (`{data_source_id, mapping_ids[]}`)
+  confirms every eligible row (belongs to that source, still `suggested`) in one request
+  instead of one call per mapping; each id is independently eligible/ineligible, so the
+  response reports `{requested, confirmed, failed[]}` rather than failing the whole batch on
+  one bad id — an id already confirmed by someone else, or from a different source, comes back
+  in `failed` and is left untouched. Every confirmation still appends its own
+  `mapping_change_event`.
 - **Sync** — `sync_source` + the `observe_source` job fetch a batch, map it through confirmed
   mappings, and upsert the 11 canonical entities (`item`, `warehouse`, `supplier`,
   `stock_level`, `price`, `lead_time`, `purchase_order`, `consumption`, `production_demand`,
@@ -186,7 +201,21 @@ Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the
   analysis (those are US2).
 - **L0 Domain Map** — `GET /api/v1/domain/map` (per-entity counts, source ids and
   observability breakdown + a static relationship graph) and `GET /api/v1/domain/{entity}`
-  (paged rows with provenance).
+  (paged, business-readable rows): each row carries `references` — every FK column resolved to
+  a compact business identity (`{entity, id, label, ...}`, e.g. an `item_id` resolves to
+  `"SKU-123 — Steel Bracket"` rather than a bare UUID) — and `provenance` (`data_source_id`,
+  `data_source_name`, the originating `source_fields[]`, `fetched_at`), alongside the row's raw
+  `source_provenance` and `observability` state.
+- **GET /api/v1/dashboard** — a thin Phase-3 read model (permission `domain.read`) composing
+  the existing enterprise-scoped services; no new tables. `lorm.open_risks` /
+  `.recommendations` / `.approvals` are `null` — those subsystems (`risk_finding` /
+  `recommendation` / `procurement_action`) land in US2/US3/US4, so the endpoint reports "not
+  evaluated," never a fake `0`. `lorm.autopilot` is the real count of capabilities at `L5` — a
+  Phase-3 approximation of "operating under an approved policy" that US5 will refine to
+  require a matching *active* policy. `data_health` reports source counts by health +
+  `last_successful_sync` (from `integration.service.list_data_sources`), canonical-row
+  `fresh`/`stale`/`lost` totals (from `domain.map_service.domain_map`), and
+  `open_observability_gaps` (`ObservabilityService.count_open`, enterprise-scoped).
 - **No `pgvector`, embeddings, or semantic retrieval** — deliberately deferred (research.md
   §13).
 
@@ -229,6 +258,6 @@ The following are **not** implemented yet (see `specs/001-smart-procurement/task
 - Verification of outcomes and **automatic demotion** (Phase 9 / US7).
 - Audit-query endpoints (Phase 10 / US8) and user-management endpoints (Phase 11 / US9).
 - End-to-end and load tests, `docs/` architecture write-ups (Phase 12).
-
-The worker loop runs but has no domain handlers yet; the AI seam exists but nothing calls it
-in a request path yet.
+- `GET /api/v1/dashboard`'s `open_risks` / `recommendations` / `approvals` counters are `null`
+  until US2/US3/US4 land; `autopilot` counts capabilities at `L5` without yet checking for a
+  matching active policy (US5).
