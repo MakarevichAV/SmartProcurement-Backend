@@ -26,11 +26,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.models import RiskFinding, RiskSignalLink
 from app.domain.models import LeadTime, ProductionDemand, PurchaseOrder, QualityRecord
+from app.jobs import queue as job_queue
+from app.jobs.models import Job
 from app.observation.models import ObservationSignal, SkuAggregate
 
 _SYSTEMATIC_DELAY_THRESHOLD_DAYS = Decimal(3)
@@ -377,7 +379,37 @@ async def _apply(
         await _link_new_evidence(
             session, finding, item_id=item_id, supplier_id=supplier_id, signal_types=signal_types
         )
+
+    await _maybe_enqueue_explanation(session, finding)
     return finding
+
+
+async def _maybe_enqueue_explanation(session: AsyncSession, finding: RiskFinding) -> None:
+    """Enqueue `generate_explanation` (T071) for a new/updated finding -- but only if it isn't
+    already `ready`, and only if a pending/running job for this exact finding doesn't already
+    exist, so repeated `detect_risks` runs over the same still-unexplained finding don't pile
+    up duplicate jobs (data-model.md §5: re-enqueued only if `ai_status` is not yet `ready`)."""
+    if finding.ai_status == "ready":
+        return
+    already_queued = (
+        await session.execute(
+            select(func.count())
+            .select_from(Job)
+            .where(
+                Job.kind == "generate_explanation",
+                Job.payload["risk_finding_id"].astext == str(finding.id),
+                Job.status.in_(("pending", "running")),
+            )
+        )
+    ).scalar_one()
+    if already_queued:
+        return
+    await job_queue.enqueue(
+        session,
+        kind="generate_explanation",
+        payload={"enterprise_id": str(finding.enterprise_id), "risk_finding_id": str(finding.id)},
+        enterprise_id=finding.enterprise_id,
+    )
 
 
 async def _find_non_terminal(
