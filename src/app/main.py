@@ -19,6 +19,7 @@ from app.api.routers import data_sources as data_sources_router
 from app.api.routers import domain as domain_router
 from app.api.routers import enterprise as enterprise_router
 from app.api.routers import mappings as mappings_router
+from app.api.routers import risks as risks_router
 from app.core.config import get_settings
 from app.core.errors import CORRELATION_ID_HEADER, register_exception_handlers
 
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(mappings_router.router, prefix=prefix)
     app.include_router(domain_router.router, prefix=prefix)
     app.include_router(dashboard_router.router, prefix=prefix)
+    app.include_router(risks_router.router, prefix=prefix)
 
     return app
 

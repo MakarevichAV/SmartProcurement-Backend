@@ -92,6 +92,7 @@ async def _with_explanation_and_evidence(
     session.add(RiskSignalLink(risk_finding_id=finding.id, observation_signal_id=signal.id))
     session.add(
         Explanation(
+            enterprise_id=enterprise_id,
             subject_type="risk_finding",
             subject_id=finding.id,
             what="Stock is depleting faster than expected.",

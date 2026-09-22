@@ -69,7 +69,7 @@ async def explain_risk(
     if finding is None or finding.enterprise_id != enterprise_id:
         raise NotFoundError("risk_finding not found")
 
-    evidence = await _evidence_payloads(session, finding)
+    evidence = await evidence_payloads(session, finding)
     valid_refs = {(e["kind"], e["ref"]) for e in evidence}
 
     prompt = json.dumps(
@@ -156,9 +156,10 @@ async def _mark_unavailable(
     )
 
 
-async def _evidence_payloads(session: AsyncSession, finding: RiskFinding) -> list[dict[str, Any]]:
+async def evidence_payloads(session: AsyncSession, finding: RiskFinding) -> list[dict[str, Any]]:
     """The evidence universe a `RiskExplanation` may legitimately cite for this finding --
-    doubles as both the prompt content and the grounding-validation allow-list."""
+    doubles as the prompt content, the grounding-validation allow-list, and (T073) the
+    `evidence` shown on `GET /risks/{id}` — the same deterministic trail in both places."""
     signals = (
         (
             await session.execute(
