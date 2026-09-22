@@ -46,7 +46,10 @@ async def _get(client: AsyncClient, headers: dict) -> dict:
 async def test_lorm_placeholders_are_null_not_zero(client: AsyncClient, seeded) -> None:
     body = await _get(client, await admin_headers(client))
     lorm = body["lorm"]
-    assert lorm["open_risks"] is None
+    # Phase 4 (T072): open_risks is no longer a null placeholder -- it's a real count now
+    # (see test_open_risks_becomes_a_real_count_once_a_risk_finding_exists below for the
+    # counting behavior itself). recommendations/approvals stay null until US3/US4.
+    assert isinstance(lorm["open_risks"], int)
     assert lorm["recommendations"] is None
     assert lorm["approvals"] is None
     assert isinstance(lorm["autopilot"], int)  # real count, 0 by seed (no L5)
@@ -61,6 +64,7 @@ async def test_lorm_placeholders_are_null_not_zero(client: AsyncClient, seeded) 
         "rows_stale",
         "rows_lost",
         "open_observability_gaps",
+        "ai_unavailable_items",  # Phase 4 (T072)
     }
 
 
