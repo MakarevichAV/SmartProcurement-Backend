@@ -41,5 +41,6 @@ def load_feature_handlers() -> None:
     if _loaded:
         return
     _loaded = True
+    from app.analysis import jobs as _analysis_jobs  # noqa: F401
     from app.integration import jobs as _integration_jobs  # noqa: F401
     from app.observation import jobs as _observation_jobs  # noqa: F401
