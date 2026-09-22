@@ -4,6 +4,18 @@ A thin Phase-3 read model: the L2/L3/L4 LORM counters are ``null`` (their subsys
 not exist yet — never a fake ``0``); L5/autopilot is a real capability-level count; the
 data-health block is aggregated from current data sources + canonical rows + observability
 gaps. Everything enterprise-scoped, permission ``domain.read``.
+
+**Phase 4 additions (T064)**: once US2 lands, ``lorm.open_risks`` becomes a real count of
+non-terminal ``risk_finding`` rows (replacing the Phase-3 ``null`` placeholder) — this is the
+one LORM counter Phase 4 is allowed to fill in, per the strict L1/L2 boundary
+(``recommendations``/``approvals`` stay ``null`` until US3/US4). T072's task text also lists
+"AI-unavailable items" as part of the aggregation service; the contract doesn't name an exact
+response key for it, so this file infers ``data_health["ai_unavailable_items"]`` (a data-trust
+concept, grouped with the rest of ``data_health``) — flagged as an inferred, not
+contract-specified, field name for T072/T073 to confirm or rename. T072's text also mentions
+"pending-approval count", "active policies", and "recent executions", which are US4/US5
+concepts with no backing data in Phase 4; this file does not test them, consistent with
+keeping Phase 4 strictly L1/L2.
 """
 
 from __future__ import annotations
@@ -183,3 +195,89 @@ async def test_dashboard_is_enterprise_scoped(
     now = (await _get(client, headers))["data_health"]
     assert now["sources_total"] == base["sources_total"]
     assert now["open_observability_gaps"] == base["open_observability_gaps"]
+
+
+async def test_open_risks_becomes_a_real_count_once_a_risk_finding_exists(
+    client: AsyncClient, db_session: AsyncSession, seeded
+) -> None:
+    # Local import: app.analysis.models is Phase 4 (T069), not yet implemented. Keeping this
+    # import inside the test (rather than module-level) lets the rest of this file's existing
+    # Phase-3 tests keep collecting/passing before T069 lands.
+    from app.analysis.models import RiskFinding
+
+    headers = await admin_headers(client)
+    before = (await _get(client, headers))["lorm"]["open_risks"]
+
+    db_session.add(
+        RiskFinding(
+            enterprise_id=seeded.id,
+            risk_type="likely_shortage",
+            item_id=uuid.uuid4(),
+            supplier_id=None,
+            severity="high",
+            status="open",
+            detected_by="rule",
+            ai_status="pending",
+            detected_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    after = (await _get(client, headers))["lorm"]["open_risks"]
+    assert isinstance(after, int)  # no longer the Phase-3 null placeholder
+    assert after == (before or 0) + 1
+
+
+async def test_open_risks_excludes_terminal_findings(
+    client: AsyncClient, db_session: AsyncSession, seeded
+) -> None:
+    from app.analysis.models import RiskFinding
+
+    headers = await admin_headers(client)
+    before = (await _get(client, headers))["lorm"]["open_risks"]
+
+    db_session.add(
+        RiskFinding(
+            enterprise_id=seeded.id,
+            risk_type="likely_shortage",
+            item_id=uuid.uuid4(),
+            supplier_id=None,
+            severity="low",
+            status="dismissed",
+            detected_by="rule",
+            ai_status="pending",
+            detected_at=datetime.now(UTC),
+            resolved_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    after = (await _get(client, headers))["lorm"]["open_risks"]
+    assert after == (before or 0)  # dismissed findings aren't "open"
+
+
+async def test_data_health_counts_ai_unavailable_risk_findings(
+    client: AsyncClient, db_session: AsyncSession, seeded
+) -> None:
+    from app.analysis.models import RiskFinding
+
+    headers = await admin_headers(client)
+    base = (await _get(client, headers))["data_health"]
+
+    db_session.add(
+        RiskFinding(
+            enterprise_id=seeded.id,
+            risk_type="price_anomaly",
+            item_id=uuid.uuid4(),
+            supplier_id=None,
+            severity="med",
+            status="open",
+            detected_by="rule",
+            ai_status="unavailable",
+            detected_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+
+    now = (await _get(client, headers))["data_health"]
+    assert now["ai_unavailable_items"] == base.get("ai_unavailable_items", 0) + 1
