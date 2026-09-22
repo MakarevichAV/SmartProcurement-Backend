@@ -8,11 +8,10 @@ Permission: `domain.read` for all three (tasks.md T073 states this explicitly fo
 `risks.py`'s whole router, dismiss included -- unlike the mutating endpoints elsewhere in the
 contract that require a dedicated `*.manage`/`*.act` permission).
 
-Note: `risk_finding` (data-model.md §5) has no column documented for a dismiss reason, and
-`audit_record.event_type` (data-model.md §9) has no `risk_dismissed` entry either -- where the
-dismiss reason is actually persisted is left to T073 to decide. This file only asserts the
-status transition and the request/response contract explicitly named above, not a specific
-storage location for the reason.
+Dismissal schema (resolved): `risk_finding.dismissed_reason` / `dismissed_at` / `dismissed_by`
+(T069) and the `risk_dismissed` audit event type (migration `ee988845269c`) now exist; this
+file's assertions stay at the status-transition/contract level since the dismiss endpoint
+itself (T073) is not implemented yet.
 """
 
 from __future__ import annotations
@@ -21,14 +20,23 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from app.analysis.models import Explanation, RiskFinding, RiskSignalLink
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analysis.models import Explanation, RiskFinding, RiskSignalLink
+from app.domain.models import Item
+from app.integration.models import DataSource
 from app.observation.models import ObservationSignal
 from tests.helpers import admin_headers, buyer_headers
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _seed_item(session: AsyncSession, enterprise_id: uuid.UUID) -> uuid.UUID:
+    item = Item(enterprise_id=enterprise_id, sku=f"SKU-{uuid.uuid4().hex[:8]}", name="Test item")
+    session.add(item)
+    await session.flush()
+    return item.id
 
 
 async def _risk_finding(
@@ -43,7 +51,7 @@ async def _risk_finding(
     finding = RiskFinding(
         enterprise_id=enterprise_id,
         risk_type=risk_type,
-        item_id=item_id or uuid.uuid4(),
+        item_id=item_id or await _seed_item(session, enterprise_id),
         supplier_id=None,
         severity="high",
         status=status,
@@ -59,9 +67,19 @@ async def _risk_finding(
 async def _with_explanation_and_evidence(
     session: AsyncSession, enterprise_id: uuid.UUID, finding: RiskFinding
 ) -> None:
+    src = DataSource(
+        enterprise_id=enterprise_id,
+        name="Test source",
+        kind="file",
+        connector_type="file",
+        config={},
+        health="available",
+    )
+    session.add(src)
+    await session.flush()
     signal = ObservationSignal(
         enterprise_id=enterprise_id,
-        data_source_id=uuid.uuid4(),
+        data_source_id=src.id,
         signal_type="stock_change",
         item_id=finding.item_id,
         supplier_id=None,
@@ -116,7 +134,7 @@ async def test_list_risks_filters_by_status(
 async def test_list_risks_filters_by_type_and_item(
     client: AsyncClient, db_session: AsyncSession, seeded
 ) -> None:
-    item_id = uuid.uuid4()
+    item_id = await _seed_item(db_session, seeded.id)
     target = await _risk_finding(db_session, seeded.id, risk_type="price_anomaly", item_id=item_id)
     await _risk_finding(db_session, seeded.id, risk_type="likely_shortage")
     headers = await admin_headers(client)

@@ -36,6 +36,7 @@ EVENT_TYPES = (
     "policy_revoked",
     "mapping_confirmed",
     "enforcement",
+    "risk_dismissed",
 )
 VERIFIED_STATES = ("verified", "failed", "unverifiable", "pending", "n/a")
 

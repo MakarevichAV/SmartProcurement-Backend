@@ -34,12 +34,14 @@ from datetime import UTC, datetime
 
 import pytest
 from app.analysis.explain import explain_risk
-from app.analysis.models import Explanation, RiskFinding, RiskSignalLink
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.provider import DeterministicMockProvider, LLMUnavailable
+from app.analysis.models import Explanation, RiskFinding, RiskSignalLink
 from app.audit.models import AuditRecord
+from app.domain.models import Item
+from app.integration.models import DataSource
 from app.observation.models import ObservationSignal
 from app.observation.observability import ObservabilityService
 
@@ -49,7 +51,19 @@ pytestmark = pytest.mark.asyncio
 async def _risk_with_signals(
     session: AsyncSession, enterprise_id: uuid.UUID, *, n_signals: int = 2
 ) -> tuple[RiskFinding, list[ObservationSignal]]:
-    item_id = uuid.uuid4()
+    item = Item(enterprise_id=enterprise_id, sku=f"SKU-{uuid.uuid4().hex[:8]}", name="Test item")
+    src = DataSource(
+        enterprise_id=enterprise_id,
+        name="Test source",
+        kind="file",
+        connector_type="file",
+        config={},
+        health="available",
+    )
+    session.add_all([item, src])
+    await session.flush()
+    item_id = item.id
+
     finding = RiskFinding(
         enterprise_id=enterprise_id,
         risk_type="likely_shortage",
@@ -68,7 +82,7 @@ async def _risk_with_signals(
     for _ in range(n_signals):
         sig = ObservationSignal(
             enterprise_id=enterprise_id,
-            data_source_id=uuid.uuid4(),
+            data_source_id=src.id,
             signal_type="stock_change",
             item_id=item_id,
             supplier_id=None,

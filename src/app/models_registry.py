@@ -6,6 +6,7 @@ can import it too. Add new model modules here as phases land.
 
 from __future__ import annotations
 
+from app.analysis import models as _analysis  # noqa: F401
 from app.audit import models as _audit  # noqa: F401
 from app.core import models_secret as _secret  # noqa: F401
 from app.domain import models as _domain  # noqa: F401

@@ -208,11 +208,14 @@ async def test_open_risks_becomes_a_real_count_once_a_risk_finding_exists(
     headers = await admin_headers(client)
     before = (await _get(client, headers))["lorm"]["open_risks"]
 
+    item = Item(enterprise_id=seeded.id, sku=f"SKU-{uuid.uuid4().hex[:8]}", name="x")
+    db_session.add(item)
+    await db_session.flush()
     db_session.add(
         RiskFinding(
             enterprise_id=seeded.id,
             risk_type="likely_shortage",
-            item_id=uuid.uuid4(),
+            item_id=item.id,
             supplier_id=None,
             severity="high",
             status="open",
@@ -236,11 +239,14 @@ async def test_open_risks_excludes_terminal_findings(
     headers = await admin_headers(client)
     before = (await _get(client, headers))["lorm"]["open_risks"]
 
+    item = Item(enterprise_id=seeded.id, sku=f"SKU-{uuid.uuid4().hex[:8]}", name="x")
+    db_session.add(item)
+    await db_session.flush()
     db_session.add(
         RiskFinding(
             enterprise_id=seeded.id,
             risk_type="likely_shortage",
-            item_id=uuid.uuid4(),
+            item_id=item.id,
             supplier_id=None,
             severity="low",
             status="dismissed",
@@ -264,11 +270,14 @@ async def test_data_health_counts_ai_unavailable_risk_findings(
     headers = await admin_headers(client)
     base = (await _get(client, headers))["data_health"]
 
+    item = Item(enterprise_id=seeded.id, sku=f"SKU-{uuid.uuid4().hex[:8]}", name="x")
+    db_session.add(item)
+    await db_session.flush()
     db_session.add(
         RiskFinding(
             enterprise_id=seeded.id,
             risk_type="price_anomaly",
-            item_id=uuid.uuid4(),
+            item_id=item.id,
             supplier_id=None,
             severity="med",
             status="open",
