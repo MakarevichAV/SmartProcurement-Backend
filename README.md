@@ -105,7 +105,7 @@ Local development URLs:
 ## Tests, lint, formatting, types
 
 ```sh
-uv run pytest                 # 75 tests (contract + integration); needs PostgreSQL running
+uv run pytest                 # 121 tests (unit + contract + integration); needs PostgreSQL running
 uv run ruff check src tests   # lint
 uv run black --check src tests # formatting
 uv run mypy src               # strict type-check
@@ -119,7 +119,8 @@ ruff/black/mypy (unmodified third-party).
 ## Capabilities (what this backend does today)
 
 Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the L0 domain map**
-(see "US1" below).
+(see "US1" below) **and Phase 4 / User Story 2 — Observation & L1/L2 risk detection with
+explanation** (see "US2" below).
 
 - **Auth & sessions** — `POST /api/v1/auth/login` (email + password), `/auth/refresh`,
   `/auth/logout`, `GET /api/v1/me`.
@@ -197,8 +198,9 @@ Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the
   mappings, and upsert the 11 canonical entities (`item`, `warehouse`, `supplier`,
   `stock_level`, `price`, `lead_time`, `purchase_order`, `consumption`, `production_demand`,
   `quality_record`, `item_supplier`), each row stamped with `source_provenance` and
-  `observability`. **Data path only** — no `observation_signal` diffing, no scheduler, no
-  analysis (those are US2).
+  `observability`. Since Phase 4, the same sync also diffs upserted rows into
+  `observation_signal` — see "US2" below. `observe_source` still only runs on its own
+  recurring interval; there is no on-demand trigger yet (deferred, **T169**).
 - **L0 Domain Map** — `GET /api/v1/domain/map` (per-entity counts, source ids and
   observability breakdown + a static relationship graph) and `GET /api/v1/domain/{entity}`
   (paged, business-readable rows): each row carries `references` — every FK column resolved to
@@ -206,18 +208,63 @@ Phases 1–2 (Foundational) **plus Phase 3 / User Story 1 — Data sources & the
   `"SKU-123 — Steel Bracket"` rather than a bare UUID) — and `provenance` (`data_source_id`,
   `data_source_name`, the originating `source_fields[]`, `fetched_at`), alongside the row's raw
   `source_provenance` and `observability` state.
-- **GET /api/v1/dashboard** — a thin Phase-3 read model (permission `domain.read`) composing
-  the existing enterprise-scoped services; no new tables. `lorm.open_risks` /
-  `.recommendations` / `.approvals` are `null` — those subsystems (`risk_finding` /
-  `recommendation` / `procurement_action`) land in US2/US3/US4, so the endpoint reports "not
+- **GET /api/v1/dashboard** — a thin read model (permission `domain.read`) composing the
+  existing enterprise-scoped services; no new tables. As of Phase 4, `lorm.open_risks` is a
+  real count of non-terminal `risk_finding` rows and `data_health.ai_unavailable_items` is a
+  real count of `risk_finding` rows with `ai_status=unavailable` (both excluding terminal
+  findings). `lorm.recommendations` / `.approvals` stay `null` — those subsystems
+  (`recommendation` / `procurement_action`) land in US3/US4, so the endpoint reports "not
   evaluated," never a fake `0`. `lorm.autopilot` is the real count of capabilities at `L5` — a
-  Phase-3 approximation of "operating under an approved policy" that US5 will refine to
-  require a matching *active* policy. `data_health` reports source counts by health +
-  `last_successful_sync` (from `integration.service.list_data_sources`), canonical-row
-  `fresh`/`stale`/`lost` totals (from `domain.map_service.domain_map`), and
-  `open_observability_gaps` (`ObservabilityService.count_open`, enterprise-scoped).
+  Phase-3-era approximation of "operating under an approved policy" that US5 will refine to
+  require a matching *active* policy. `data_health` also reports source counts by health +
+  `last_successful_sync` (from `integration.service.list_data_sources`) and canonical-row
+  `fresh`/`stale`/`lost` totals (from `domain.map_service.domain_map`).
 - **No `pgvector`, embeddings, or semantic retrieval** — deliberately deferred (research.md
   §13).
+
+### US2 — observation & L1/L2 risk detection with explanation
+
+- **Observation** — `sync_source` diffs a fixed watch-list of attributes (stock/price/
+  lead_time/quality/demand, FR-014) into an append-only `observation_signal` table (indexed,
+  not physically partitioned in v1 — deferred, not required at current volume). **A row's
+  first-seen sync establishes a baseline and produces no signal; only a subsequent change to a
+  watched attribute does.** Producing signals enqueues `recompute_aggregates`
+  (`app/observation/aggregates.py`), which derives per-item `sku_aggregate` rows
+  (`avg_daily_consumption`, `days_of_cover`, `next_expected_delivery_at`, `last_price`,
+  `price_trend`, `avg_supplier_delay_days`) — items without currently trustworthy
+  (`observability != 'lost'`) stock data get no aggregate row.
+- **Durable pipeline** — all four stages run on the existing `JobQueue` (no new
+  scheduler/orchestration framework): `observe_source` (self-reschedules at
+  `data_source.observation_interval_seconds`) → `recompute_aggregates` → `detect_risks` →
+  `generate_explanation`, each stage enqueuing the next in its own transaction.
+- **Deterministic risk detection** (`app/analysis/rules.py`) — `detect_risks` is **purely
+  deterministic**; the AI plays no role in whether a risk exists. Six risk types: three
+  relational (`likely_shortage`, `insufficient_until_next_delivery`, `production_stop_risk` —
+  the last only from `production_demand`) and three against fixed v1 default thresholds
+  (`systematic_supplier_delay`: avg lateness > 3 days over ≥ 3 received POs; `price_anomaly`:
+  `|price_trend| ≥ 10%`; `quality_degradation`: avg `defect_rate` > 5% — promoting these to
+  per-enterprise configurable settings is deferred, **T168**). Identity/dedup is
+  `(enterprise_id, risk_type, item_id|supplier_id)`, enforced only against non-terminal
+  findings — a `resolved`/`dismissed` finding may recur as a new row; a matching non-terminal
+  finding instead gets new evidence linked via `risk_signal_link`.
+- **Grounded AI explanation** (`app/analysis/explain.py`) — `generate_explanation` calls
+  `generate_structured(RiskExplanation)` to explain an already-detected finding (FR-018/FR-070)
+  — never to decide whether it exists. Evidence refs are validated: `observation_signal` (via
+  `risk_signal_link`) for most risk types, plus `domain_row`/`purchase_order` refs specifically
+  for `systematic_supplier_delay` (which has no single diffable signal by design). Persistent
+  failure sets `risk_finding.ai_status=unavailable` — the underlying finding stays fully valid
+  — and writes an `ai_unavailable` audit record + observability gap instead of proceeding.
+- **Router** `app/api/routers/risks.py` (permission `domain.read`): `GET /api/v1/risks`
+  (filter by `status`/`risk_type`/`item_id`, cursor-paginated), `GET /api/v1/risks/{id}`
+  (detection + explanation + evidence, 404 for unknown/foreign-enterprise ids alike),
+  `POST /api/v1/risks/{id}/dismiss` (non-empty `reason` required → 400 on empty, 409 on an
+  already-terminal finding; persists `dismissed_reason`/`dismissed_at`/`dismissed_by` +
+  `resolved_at`; records `audit_record(event_type=risk_dismissed)`).
+- **Validated** — a Phase 4 integration/manual-validation pass exercised the full pipeline and
+  UI against the real running app (dashboard, risks list/detail, dismiss + audit + cache
+  refresh) with no defects found. `systematic_supplier_delay`'s `domain_row`/`purchase_order`
+  evidence rendering could not be manually exercised, since the demo fixture's purchase order
+  is `open`, not `received` — a test-coverage note, not a product defect.
 
 ### Authentication behavior
 
@@ -247,10 +294,8 @@ local dev database.
 
 The following are **not** implemented yet (see `specs/001-smart-procurement/tasks.md`):
 
-- Observation loop, signals, aggregates, risk detection and AI explanations (Phase 4 / US2) —
-  US1's sync writes canonical rows but does **not** diff them into `observation_signal`.
 - Recommendations and the `LormEnforcementService.evaluate()` `allow / ask / deny` gate,
-  `procurement_action` (Phase 5 / US3).
+  `procurement_action` (Phase 5 / US3). **No L3+ capability exists anywhere in the system yet.**
 - L4 approval workflow, execution adapters, dispatch + reconciliation (Phase 6 / US4).
 - L5 policies, autopilot, policy expiry scan (Phase 7 / US5).
 - Full capability management — AI promotion suggestions, the L4→L5 approver ≠ policy-author
@@ -258,6 +303,15 @@ The following are **not** implemented yet (see `specs/001-smart-procurement/task
 - Verification of outcomes and **automatic demotion** (Phase 9 / US7).
 - Audit-query endpoints (Phase 10 / US8) and user-management endpoints (Phase 11 / US9).
 - End-to-end and load tests, `docs/` architecture write-ups (Phase 12).
-- `GET /api/v1/dashboard`'s `open_risks` / `recommendations` / `approvals` counters are `null`
-  until US2/US3/US4 land; `autopilot` counts capabilities at `L5` without yet checking for a
-  matching active policy (US5).
+- `GET /api/v1/dashboard`'s `recommendations` / `approvals` counters are `null` until US3/US4
+  land; `autopilot` counts capabilities at `L5` without yet checking for a matching active
+  policy (US5).
+
+Two smaller gaps from Phase 4 are tracked as deferred backlog rather than scheduled into a
+phase (see the Deferred / Post-MVP Backlog section of `tasks.md`):
+
+- **T168** — the three threshold-based L2 risk rules (`systematic_supplier_delay`,
+  `price_anomaly`, `quality_degradation`) use fixed v1 default constants; promoting them to
+  per-enterprise configurable settings is deferred.
+- **T169** — there is no user-facing "Sync Now" trigger for a Data Source; `observe_source`
+  only runs on its own recurring interval.
